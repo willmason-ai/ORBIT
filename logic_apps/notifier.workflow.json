@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "$connections": { "defaultValue": {}, "type": "Object" },
+    "supervisorEmails": { "type": "String", "defaultValue": "will@presidiorocks.com" }
+  },
+  "triggers": {
+    "manual": {
+      "type": "Request",
+      "kind": "Http",
+      "inputs": {
+        "schema": {
+          "type": "object",
+          "properties": {
+            "event":           { "type": "string" },
+            "project_name":    { "type": "string" },
+            "employee_name":   { "type": "string" },
+            "rag_status":      { "type": "string" },
+            "parse_confidence":{ "type": "number" },
+            "report_id":       { "type": "integer" }
+          }
+        }
+      }
+    }
+  },
+  "actions": {
+    "Compose_subject": {
+      "type": "Compose",
+      "inputs": "@if(equals(triggerBody()?['event'], 'RED_STATUS'), concat('🔴 RED status reported - ', triggerBody()?['project_name'], ' by ', triggerBody()?['employee_name']), if(equals(triggerBody()?['event'], 'LOW_CONFIDENCE'), concat('⚠️ ORBIT needs your review - low-confidence parse for ', triggerBody()?['employee_name']), if(equals(triggerBody()?['event'], 'NEW_PROJECT'), concat('📁 New project detected - ', triggerBody()?['project_name']), concat('👤 New engineer registered - ', triggerBody()?['employee_name']))))"
+    },
+    "Send_email": {
+      "type": "ApiConnection",
+      "runAfter": { "Compose_subject": [ "Succeeded" ] },
+      "inputs": {
+        "host": { "connection": { "name": "@parameters('$connections')['office365']['connectionId']" } },
+        "method": "post",
+        "path": "/v2/Mail",
+        "body": {
+          "To": "@parameters('supervisorEmails')",
+          "Subject": "@outputs('Compose_subject')",
+          "Body": "<p>ORBIT alert</p><p>Report ID: @{triggerBody()?['report_id']}</p><p>Project: @{triggerBody()?['project_name']}</p><p>Engineer: @{triggerBody()?['employee_name']}</p><p>RAG: @{triggerBody()?['rag_status']}</p><p>Confidence: @{triggerBody()?['parse_confidence']}</p><p><a href=\"https://app-orbit-dashboard-prod.azurewebsites.net\">Open ORBIT</a></p>",
+          "Importance": "High"
+        }
+      }
+    }
+  },
+  "outputs": {}
+}

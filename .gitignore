@@ -1,0 +1,48 @@
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Node / Vite ----
+node_modules/
+dashboard/dist/
+dashboard/.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ---- Azure Functions ----
+local.settings.json
+bin/
+obj/
+.azure/
+.azurefunctions/
+
+# ---- Secrets ----
+*.env
+*.env.*
+!.env.example
+*.pem
+*.pfx
+
+# ---- Terraform / Bicep state (if any) ----
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# ---- Build artifacts ----
+dist/
+build/
+*.log

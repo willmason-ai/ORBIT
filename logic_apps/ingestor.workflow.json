@@ -1,0 +1,122 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "$connections": {
+      "defaultValue": {},
+      "type": "Object"
+    },
+    "storageAccountName": {
+      "type": "String",
+      "defaultValue": "storbitrawprod"
+    },
+    "containerName": {
+      "type": "String",
+      "defaultValue": "orbit-pptx-raw"
+    },
+    "allowedSenderDomain": {
+      "type": "String",
+      "defaultValue": "presidio.com"
+    }
+  },
+  "triggers": {
+    "When_a_new_email_arrives_(V3)": {
+      "type": "ApiConnection",
+      "recurrence": { "frequency": "Minute", "interval": 1 },
+      "inputs": {
+        "host": { "connection": { "name": "@parameters('$connections')['office365']['connectionId']" } },
+        "method": "get",
+        "path": "/v3/Mail/OnNewEmail",
+        "queries": {
+          "folderPath": "Inbox",
+          "importance": "Any",
+          "fetchOnlyWithAttachment": true,
+          "includeAttachments": true
+        }
+      }
+    }
+  },
+  "actions": {
+    "Parse_sender_domain": {
+      "type": "Compose",
+      "inputs": "@toLower(last(split(triggerBody()?['From'], '@')))"
+    },
+    "Reject_if_not_allowed_domain": {
+      "type": "If",
+      "runAfter": { "Parse_sender_domain": [ "Succeeded" ] },
+      "expression": {
+        "not": { "equals": [ "@outputs('Parse_sender_domain')", "@parameters('allowedSenderDomain')" ] }
+      },
+      "actions": {
+        "Terminate_unauthorized": {
+          "type": "Terminate",
+          "inputs": { "runStatus": "Cancelled" }
+        }
+      }
+    },
+    "For_each_attachment": {
+      "type": "Foreach",
+      "runAfter": { "Reject_if_not_allowed_domain": [ "Succeeded" ] },
+      "foreach": "@triggerBody()?['Attachments']",
+      "actions": {
+        "Is_pptx": {
+          "type": "If",
+          "expression": {
+            "and": [
+              { "endsWith": [ "@toLower(items('For_each_attachment')?['Name'])", ".pptx" ] }
+            ]
+          },
+          "actions": {
+            "Compose_blob_path": {
+              "type": "Compose",
+              "inputs": "@{encodeURIComponent(triggerBody()?['From'])}/@{formatDateTime(triggerBody()?['ReceivedDateTime'], 'yyyyMMdd_HHmmss')}__@{items('For_each_attachment')?['Name']}"
+            },
+            "Upload_PPTX_to_Blob": {
+              "type": "ApiConnection",
+              "runAfter": { "Compose_blob_path": [ "Succeeded" ] },
+              "inputs": {
+                "host": { "connection": { "name": "@parameters('$connections')['azureblob']['connectionId']" } },
+                "method": "post",
+                "path": "/v2/datasets/@{encodeURIComponent(encodeURIComponent(parameters('storageAccountName')))}/files",
+                "queries": {
+                  "folderPath": "@{parameters('containerName')}",
+                  "name": "@{outputs('Compose_blob_path')}",
+                  "queryParametersSingleEncoded": true
+                },
+                "body": "@base64ToBinary(items('For_each_attachment')?['ContentBytes'])"
+              }
+            },
+            "Compose_sidecar_json": {
+              "type": "Compose",
+              "runAfter": { "Upload_PPTX_to_Blob": [ "Succeeded" ] },
+              "inputs": {
+                "sender_email": "@triggerBody()?['From']",
+                "sender_display_name": "@triggerBody()?['FromName']",
+                "email_body": "@triggerBody()?['Body']",
+                "received_at": "@triggerBody()?['ReceivedDateTime']",
+                "subject": "@triggerBody()?['Subject']",
+                "original_filename": "@items('For_each_attachment')?['Name']"
+              }
+            },
+            "Upload_sidecar_json": {
+              "type": "ApiConnection",
+              "runAfter": { "Compose_sidecar_json": [ "Succeeded" ] },
+              "inputs": {
+                "host": { "connection": { "name": "@parameters('$connections')['azureblob']['connectionId']" } },
+                "method": "post",
+                "path": "/v2/datasets/@{encodeURIComponent(encodeURIComponent(parameters('storageAccountName')))}/files",
+                "queries": {
+                  "folderPath": "@{parameters('containerName')}",
+                  "name": "@{replace(outputs('Compose_blob_path'), '.pptx', '.json')}",
+                  "queryParametersSingleEncoded": true
+                },
+                "body": "@{outputs('Compose_sidecar_json')}"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "outputs": {}
+}

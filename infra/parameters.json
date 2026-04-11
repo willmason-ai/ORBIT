@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "env":              { "value": "prod" },
+    "location":         { "value": "eastus2" },
+    "sqlAdminLogin":    { "value": "orbitadmin" },
+    "sqlAdminPassword": { "value": "REPLACE_ME_BEFORE_DEPLOY" },
+    "deployerObjectId": { "value": "REPLACE_WITH_YOUR_ENTRA_OBJECT_ID" },
+    "supervisorEmails": { "value": "will@presidiorocks.com" }
+  }
+}
