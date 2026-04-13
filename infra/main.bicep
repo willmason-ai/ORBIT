@@ -221,18 +221,21 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
 }
 
 // ============================================================
-// FUNCTION APP — Flex Consumption, Python 3.12
+// FUNCTION APP — Consumption (Y1), Python 3.12
 // VNet-integrated into snet-avs-function (reaches SQL via PE)
 // ============================================================
 resource functionPlan 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: functionPlanName
   location: location
   sku: {
-    tier: 'FlexConsumption'
-    name: 'FC1'
+    name: 'EP1'
+    tier: 'ElasticPremium'
   }
-  kind: 'functionapp'
-  properties: { reserved: true }
+  kind: 'elastic'
+  properties: {
+    reserved: true
+    maximumElasticWorkerCount: 4
+  }
 }
 
 resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
@@ -245,24 +248,13 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
     httpsOnly: true
     virtualNetworkSubnetId: functionSubnet.id
     vnetRouteAllEnabled: true
-    functionAppConfig: {
-      deployment: {
-        storage: {
-          type: 'blobContainer'
-          value: '${storage.properties.primaryEndpoints.blob}app-package'
-          authentication: { type: 'SystemAssignedIdentity' }
-        }
-      }
-      scaleAndConcurrency: {
-        maximumInstanceCount: 10
-        instanceMemoryMB: 2048
-      }
-      runtime: { name: 'python', version: '3.12' }
-    }
     siteConfig: {
+      linuxFxVersion: 'PYTHON|3.12'
       appSettings: [
-        { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
-        { name: 'AzureWebJobsStorage__accountName',      value: storage.name }
+        { name: 'FUNCTIONS_EXTENSION_VERSION',            value: '~4' }
+        { name: 'FUNCTIONS_WORKER_RUNTIME',               value: 'python' }
+        { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING',  value: appInsights.properties.ConnectionString }
+        { name: 'AzureWebJobsStorage',                   value: 'DefaultEndpointsProtocol=https;AccountName=${storage.name};EndpointSuffix=${environment().suffixes.storage};AccountKey=${storage.listKeys().keys[0].value}' }
         { name: 'ANTHROPIC_API_KEY',                     value: '@Microsoft.KeyVault(VaultName=${keyVaultName};SecretName=ANTHROPIC-API-KEY)' }
         { name: 'SQL_CONNECTION_STRING',                 value: '@Microsoft.KeyVault(VaultName=${keyVaultName};SecretName=SQL-CONNECTION-STRING)' }
         { name: 'DOCINT_ENDPOINT',                       value: '@Microsoft.KeyVault(VaultName=${keyVaultName};SecretName=DOCINT-ENDPOINT)' }
@@ -354,7 +346,7 @@ resource notifierLogicApp 'Microsoft.Logic/workflows@2019-05-01' = {
 // ROLE ASSIGNMENTS
 // ============================================================
 var storageBlobContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
-var keyVaultSecretsUserRoleId    = '4633458b-17de-4a39-8594-1c93e5b6f2e8'
+var keyVaultSecretsUserRoleId    = '4633458b-17de-408a-b874-0445c86b69e6'
 
 // Function App MI → Storage Blob Data Contributor
 resource funcMiBlobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
