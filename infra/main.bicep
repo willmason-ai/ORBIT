@@ -1,54 +1,95 @@
 // ============================================================
 // ORBIT — main.bicep
 // Operations Reporting & Brief Intelligence Tracker
-// Target scope: resource group (deploy with `az deployment group create`)
+//
+// Deploy to: rg-orbit-wmason (Central US)
+// Cross-RG refs: rg-avs2 (VNet, SQL, LAW)
+//
+//   az deployment group create -g rg-orbit-wmason \
+//     -f infra/main.bicep -p @infra/parameters.json
 // ============================================================
 
 targetScope = 'resourceGroup'
 
-@description('Short environment label used in resource names (e.g. prod, dev).')
-param env string = 'prod'
+// ----- Core parameters -----
+@description('Azure region — must match rg-avs2 VNet.')
+param location string = 'centralus'
 
-@description('Azure region for all resources.')
-param location string = 'eastus2'
-
-@description('Administrator login for the Azure SQL logical server.')
-param sqlAdminLogin string
-
-@description('Administrator password for the Azure SQL logical server.')
-@secure()
-param sqlAdminPassword string
-
-@description('Entra ID tenant GUID hosting the supervisor app registration (presidiorocks.com).')
+@description('Entra ID tenant GUID (presidiorocks.com).')
 param tenantId string = subscription().tenantId
 
-@description('Object ID of the deployer / dashboard Entra admin. Used for Key Vault access policy seeding.')
+@description('Object ID of the deployer. Gets Key Vault Administrator on the new KV.')
 param deployerObjectId string
 
 @description('Comma-separated supervisor emails for the notifier.')
 param supervisorEmails string = 'will@presidiorocks.com'
 
-// ------------------------------------------------------------
-// Naming
-// ------------------------------------------------------------
-var suffix               = toLower(env)
-var storageAccountName   = 'storbitraw${suffix}'
+// ----- Cross-RG references (rg-avs2) -----
+@description('Resource group holding the shared VNet, SQL server, and LAW.')
+param networkRgName string = 'rg-avs2'
+
+@description('Existing VNet name in networkRgName.')
+param vnetName string = 'Vnet-Workload-01'
+
+@description('Subnet delegated to Microsoft.Web/serverFarms (Function + App Service VNet integration).')
+param functionSubnetName string = 'snet-avs-function'
+
+@description('Existing SQL server name in networkRgName (public access disabled — Function reaches it via VNet + PE).')
+param existingSqlServerName string = 'sql-avsnetmon'
+
+@description('Existing Log Analytics workspace name in networkRgName.')
+param existingLawName string = 'law-shane'
+
+// ----- SQL database params -----
+@description('Database name to create on the existing SQL server.')
+param sqlDatabaseName string = 'orbitdb'
+
+// ----- Naming -----
+var storageAccountName   = 'storbitwmason'
 var containerName        = 'orbit-pptx-raw'
-var docIntName           = 'docint-orbit-${suffix}'
-var sqlServerName        = 'sql-orbit-${suffix}'
-var sqlDatabaseName      = 'orbitdb'
-var keyVaultName         = 'kv-orbit-${suffix}'
-var lawName              = 'law-orbit-${suffix}'
-var appInsightsName      = 'appi-orbit-${suffix}'
-var functionAppName      = 'func-orbit-${suffix}'
-var functionPlanName     = 'flex-orbit-${suffix}'
-var appServicePlanName   = 'asp-orbit-linux-${suffix}'
-var dashboardAppName     = 'app-orbit-dashboard-${suffix}'
-var ingestorLogicAppName = 'logic-orbit-ingestor-${suffix}'
-var notifierLogicAppName = 'logic-orbit-notifier-${suffix}'
+var docIntName           = 'docint-orbit-wmason'
+var keyVaultName         = 'kv-orbit-wmason'
+var appInsightsName      = 'appi-orbit-wmason'
+var functionAppName      = 'func-orbit-wmason'
+var functionPlanName     = 'flex-orbit-wmason'
+var appServicePlanName   = 'asp-orbit-linux-wmason'
+var dashboardAppName     = 'app-orbit-dashboard-wmason'
+var ingestorLogicAppName = 'logic-orbit-ingestor-wmason'
+var notifierLogicAppName = 'logic-orbit-notifier-wmason'
 
 // ============================================================
-// STORAGE — raw PPTX container with lifecycle policy
+// EXISTING RESOURCE REFERENCES (rg-avs2)
+// ============================================================
+resource functionSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-01-01' existing = {
+  scope: resourceGroup(networkRgName)
+  name: '${vnetName}/${functionSubnetName}'
+}
+
+resource existingLaw 'Microsoft.OperationalInsights/workspaces@2023-09-01' existing = {
+  scope: resourceGroup(networkRgName)
+  name: existingLawName
+}
+
+resource existingSqlServer 'Microsoft.Sql/servers@2023-08-01-preview' existing = {
+  scope: resourceGroup(networkRgName)
+  name: existingSqlServerName
+}
+
+// ============================================================
+// MODULE: Create orbitdb on existing SQL server in rg-avs2
+// ============================================================
+module orbitDatabase 'modules/orbitdb.bicep' = {
+  scope: resourceGroup(networkRgName)
+  name: 'deploy-orbitdb'
+  params: {
+    sqlServerName: existingSqlServerName
+    databaseName: sqlDatabaseName
+    location: location
+  }
+}
+
+// ============================================================
+// STORAGE — ORBIT-specific, with lifecycle policy
 // ============================================================
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: storageAccountName
@@ -73,6 +114,12 @@ resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01'
 resource pptxContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
   parent: blobService
   name: containerName
+  properties: { publicAccess: 'None' }
+}
+
+resource appPackageContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  parent: blobService
+  name: 'app-package'
   properties: { publicAccess: 'None' }
 }
 
@@ -104,7 +151,7 @@ resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2
 }
 
 // ============================================================
-// AZURE AI DOCUMENT INTELLIGENCE
+// AZURE AI DOCUMENT INTELLIGENCE (S0)
 // ============================================================
 resource docInt 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
   name: docIntName
@@ -118,49 +165,7 @@ resource docInt 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
 }
 
 // ============================================================
-// AZURE SQL — Serverless GP_S_Gen5_1, auto-pause 60 min
-// ============================================================
-resource sqlServer 'Microsoft.Sql/servers@2023-08-01-preview' = {
-  name: sqlServerName
-  location: location
-  properties: {
-    administratorLogin: sqlAdminLogin
-    administratorLoginPassword: sqlAdminPassword
-    version: '12.0'
-    minimalTlsVersion: '1.2'
-    publicNetworkAccess: 'Enabled'
-  }
-}
-
-resource sqlFirewallAzure 'Microsoft.Sql/servers/firewallRules@2023-08-01-preview' = {
-  parent: sqlServer
-  name: 'AllowAllWindowsAzureIps'
-  properties: { startIpAddress: '0.0.0.0', endIpAddress: '0.0.0.0' }
-}
-
-resource sqlDb 'Microsoft.Sql/servers/databases@2023-08-01-preview' = {
-  parent: sqlServer
-  name: sqlDatabaseName
-  location: location
-  sku: {
-    name: 'GP_S_Gen5_1'
-    tier: 'GeneralPurpose'
-    family: 'Gen5'
-    capacity: 1
-  }
-  properties: {
-    collation: 'SQL_Latin1_General_CP1_CI_AS'
-    maxSizeBytes: 34359738368  // 32 GB
-    autoPauseDelay: 60
-    minCapacity: json('0.5')
-    zoneRedundant: false
-    readScale: 'Disabled'
-    requestedBackupStorageRedundancy: 'Local'
-  }
-}
-
-// ============================================================
-// KEY VAULT + placeholder secrets
+// KEY VAULT — ORBIT-specific, RBAC-only
 // ============================================================
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: keyVaultName
@@ -175,7 +180,7 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   }
 }
 
-// Placeholder secrets — real values loaded post-deploy via `az keyvault secret set`
+// Placeholder secrets — load real values post-deploy
 resource kvAnthropic 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   parent: keyVault
   name: 'ANTHROPIC-API-KEY'
@@ -186,7 +191,7 @@ resource kvSqlConn 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   parent: keyVault
   name: 'SQL-CONNECTION-STRING'
   properties: {
-    value: 'Driver={ODBC Driver 18 for SQL Server};Server=tcp:${sqlServer.properties.fullyQualifiedDomainName},1433;Database=${sqlDatabaseName};Uid=${sqlAdminLogin};Pwd=${sqlAdminPassword};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=60;'
+    value: 'Driver={ODBC Driver 18 for SQL Server};Server=tcp:${existingSqlServer.properties.fullyQualifiedDomainName},1433;Database=${sqlDatabaseName};Uid=REPLACE_ME;Pwd=REPLACE_ME;Encrypt=yes;TrustServerCertificate=no;Connection Timeout=60;'
   }
 }
 
@@ -203,30 +208,21 @@ resource kvDocintKey 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
 }
 
 // ============================================================
-// LOG ANALYTICS + APP INSIGHTS
+// APP INSIGHTS (new, linked to existing LAW in rg-avs2)
 // ============================================================
-resource law 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
-  name: lawName
-  location: location
-  properties: {
-    sku: { name: 'PerGB2018' }
-    retentionInDays: 30
-  }
-}
-
 resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
   name: appInsightsName
   location: location
   kind: 'web'
   properties: {
     Application_Type: 'web'
-    WorkspaceResourceId: law.id
+    WorkspaceResourceId: existingLaw.id
   }
 }
 
 // ============================================================
 // FUNCTION APP — Flex Consumption, Python 3.12
-// Hosts both orbit_parser (blob trigger) and orbit_api (HTTP/ASGI)
+// VNet-integrated into snet-avs-function (reaches SQL via PE)
 // ============================================================
 resource functionPlan 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: functionPlanName
@@ -247,6 +243,8 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
   properties: {
     serverFarmId: functionPlan.id
     httpsOnly: true
+    virtualNetworkSubnetId: functionSubnet.id
+    vnetRouteAllEnabled: true
     functionAppConfig: {
       deployment: {
         storage: {
@@ -256,7 +254,7 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         }
       }
       scaleAndConcurrency: {
-        maximumInstanceCount: 40
+        maximumInstanceCount: 10
         instanceMemoryMB: 2048
       }
       runtime: { name: 'python', version: '3.12' }
@@ -274,7 +272,7 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         { name: 'PARSE_CONFIDENCE_THRESHOLD',            value: '0.70' }
         { name: 'PROJECT_MATCH_THRESHOLD',               value: '0.85' }
         { name: 'SUPERVISOR_EMAILS',                     value: supervisorEmails }
-        { name: 'ORBIT_ENV',                             value: env }
+        { name: 'ORBIT_ENV',                             value: 'production' }
         { name: 'ORBIT_TENANT_ID',                       value: tenantId }
       ]
     }
@@ -282,7 +280,8 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
 }
 
 // ============================================================
-// DASHBOARD — App Service Plan + App Service (Linux, Node 20)
+// DASHBOARD — App Service Plan B1 + App Service (Node 20)
+// VNet-integrated into the same subnet
 // ============================================================
 resource appServicePlan 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: appServicePlanName
@@ -300,6 +299,8 @@ resource dashboardApp 'Microsoft.Web/sites@2023-12-01' = {
   properties: {
     serverFarmId: appServicePlan.id
     httpsOnly: true
+    virtualNetworkSubnetId: functionSubnet.id
+    vnetRouteAllEnabled: true
     siteConfig: {
       linuxFxVersion: 'NODE|20-lts'
       appSettings: [
@@ -313,8 +314,7 @@ resource dashboardApp 'Microsoft.Web/sites@2023-12-01' = {
 }
 
 // ============================================================
-// LOGIC APPS (Consumption) — empty shells; workflows uploaded
-// via workflow.json templates in /logic_apps
+// LOGIC APPS (Consumption) — shells for workflow upload
 // ============================================================
 resource ingestorLogicApp 'Microsoft.Logic/workflows@2019-05-01' = {
   name: ingestorLogicAppName
@@ -351,11 +351,12 @@ resource notifierLogicApp 'Microsoft.Logic/workflows@2019-05-01' = {
 }
 
 // ============================================================
-// ROLE ASSIGNMENTS (Managed Identity → resources)
+// ROLE ASSIGNMENTS
 // ============================================================
 var storageBlobContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 var keyVaultSecretsUserRoleId    = '4633458b-17de-4a39-8594-1c93e5b6f2e8'
 
+// Function App MI → Storage Blob Data Contributor
 resource funcMiBlobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: storage
   name: guid(storage.id, functionApp.id, storageBlobContributorRoleId)
@@ -366,6 +367,7 @@ resource funcMiBlobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
+// Function App MI → Key Vault Secrets User
 resource funcMiKvRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: keyVault
   name: guid(keyVault.id, functionApp.id, keyVaultSecretsUserRoleId)
@@ -376,6 +378,7 @@ resource funcMiKvRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
+// Ingestor Logic App MI → Storage Blob Data Contributor
 resource ingestorMiBlobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: storage
   name: guid(storage.id, ingestorLogicApp.id, storageBlobContributorRoleId)
@@ -386,6 +389,7 @@ resource ingestorMiBlobRole 'Microsoft.Authorization/roleAssignments@2022-04-01'
   }
 }
 
+// Ingestor Logic App MI → Key Vault Secrets User
 resource ingestorMiKvRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: keyVault
   name: guid(keyVault.id, ingestorLogicApp.id, keyVaultSecretsUserRoleId)
@@ -396,6 +400,7 @@ resource ingestorMiKvRole 'Microsoft.Authorization/roleAssignments@2022-04-01' =
   }
 }
 
+// Notifier Logic App MI → Key Vault Secrets User
 resource notifierMiKvRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: keyVault
   name: guid(keyVault.id, notifierLogicApp.id, keyVaultSecretsUserRoleId)
@@ -406,14 +411,14 @@ resource notifierMiKvRole 'Microsoft.Authorization/roleAssignments@2022-04-01' =
   }
 }
 
+// Deployer → Key Vault Administrator
 resource deployerKvAdminRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: keyVault
   name: guid(keyVault.id, deployerObjectId, 'kvadmin')
   properties: {
     principalId: deployerObjectId
-    // Key Vault Administrator
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '00482a5a-887f-4fb3-b363-3b7fe8e74483')
-    principalType: 'User'
+    principalType: 'ServicePrincipal'
   }
 }
 
@@ -425,10 +430,10 @@ output functionAppHost          string = functionApp.properties.defaultHostName
 output dashboardAppName         string = dashboardApp.name
 output dashboardHost            string = dashboardApp.properties.defaultHostName
 output storageAccountName       string = storage.name
-output sqlServerFqdn            string = sqlServer.properties.fullyQualifiedDomainName
-output sqlDatabaseName          string = sqlDatabaseName
 output keyVaultName             string = keyVault.name
 output docIntelligenceEndpoint  string = docInt.properties.endpoint
+output sqlServerFqdn            string = existingSqlServer.properties.fullyQualifiedDomainName
+output sqlDatabaseName          string = sqlDatabaseName
+output appInsightsConnectionStr string = appInsights.properties.ConnectionString
 output ingestorLogicAppName     string = ingestorLogicApp.name
 output notifierLogicAppName     string = notifierLogicApp.name
-output appInsightsConnectionStr string = appInsights.properties.ConnectionString

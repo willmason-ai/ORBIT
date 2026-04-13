@@ -2,11 +2,14 @@
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
   "contentVersion": "1.0.0.0",
   "parameters": {
-    "env":              { "value": "prod" },
-    "location":         { "value": "eastus2" },
-    "sqlAdminLogin":    { "value": "orbitadmin" },
-    "sqlAdminPassword": { "value": "REPLACE_ME_BEFORE_DEPLOY" },
-    "deployerObjectId": { "value": "REPLACE_WITH_YOUR_ENTRA_OBJECT_ID" },
-    "supervisorEmails": { "value": "will@presidiorocks.com" }
+    "location":            { "value": "centralus" },
+    "deployerObjectId":    { "value": "ab4b2f16-11a7-4400-a849-55cbbfe7f497" },
+    "supervisorEmails":    { "value": "will@presidiorocks.com" },
+    "networkRgName":       { "value": "rg-avs2" },
+    "vnetName":            { "value": "Vnet-Workload-01" },
+    "functionSubnetName":  { "value": "snet-avs-function" },
+    "existingSqlServerName": { "value": "sql-avsnetmon" },
+    "existingLawName":     { "value": "law-shane" },
+    "sqlDatabaseName":     { "value": "orbitdb" }
   }
 }

@@ -42,6 +42,10 @@ obj/
 *.tfstate.*
 .terraform/
 
+# ---- Bicep compiled output ----
+infra/*.json
+!infra/parameters.json
+
 # ---- Build artifacts ----
 dist/
 build/
