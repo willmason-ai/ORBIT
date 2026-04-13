@@ -1,5 +1,4 @@
 azure-functions>=1.21.0
-azure-functions-worker>=1.0.0
 azure-identity>=1.17.1
 azure-storage-blob>=12.22.0
 azure-ai-formrecognizer>=3.3.3
